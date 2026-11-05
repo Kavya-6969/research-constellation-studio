@@ -101,17 +101,17 @@ function WorkspaceInner() {
   useEffect(() => {
     (async () => {
       const { data, error } = await supabase.from("workspaces").select("id,name").order("created_at");
-      if (error) return toast.error(error.message);
+      if (error) { toast.error(error.message); return; }
       let rows = data ?? [];
       if (!rows.length) {
         const { data: created, error: e2 } = await supabase.from("workspaces")
           .insert({ name: "Long-context LLMs", nodes: clean(initialNodes) as never, edges: cleanEdges(initialEdges) as never })
           .select("id,name").single();
-        if (e2) return toast.error(e2.message);
+        if (e2) { toast.error(e2.message); return; }
         rows = [created];
       }
       setWorkspaces(rows);
-      setWsId(rows[0].id);
+      setWsId(rows[0]!.id);
     })();
   }, []);
 
@@ -121,7 +121,7 @@ function WorkspaceInner() {
     setLoaded(false);
     (async () => {
       const { data, error } = await supabase.from("workspaces").select("nodes,edges").eq("id", wsId).single();
-      if (error) return toast.error(error.message);
+      if (error) { toast.error(error.message); return; }
       skipSave.current = true;
       setNodes((data.nodes as unknown as Node<ArtifactData>[]) ?? []);
       setEdges((data.edges as unknown as Edge[]) ?? []);
@@ -149,19 +149,19 @@ function WorkspaceInner() {
     const name = window.prompt("Workspace name", "New workspace")?.trim();
     if (!name) return;
     const { data, error } = await supabase.from("workspaces").insert({ name }).select("id,name").single();
-    if (error) return toast.error(error.message);
+    if (error) { toast.error(error.message); return; }
     setWorkspaces((w) => [...w, data]);
     setWsId(data.id);
   };
 
   const deleteWorkspace = async (id: string) => {
-    if (workspaces.length <= 1) return toast.error("Keep at least one workspace.");
+    if (workspaces.length <= 1) { toast.error("Keep at least one workspace."); return; }
     if (!window.confirm("Delete this workspace?")) return;
     const { error } = await supabase.from("workspaces").delete().eq("id", id);
-    if (error) return toast.error(error.message);
+    if (error) { toast.error(error.message); return; }
     const rest = workspaces.filter((w) => w.id !== id);
     setWorkspaces(rest);
-    if (id === wsId) setWsId(rest[0].id);
+    if (id === wsId) setWsId(rest[0]!.id);
   };
   const [thoughts, setThoughts] = useState(initialThoughts);
   const [clustering, setClustering] = useState(false);
