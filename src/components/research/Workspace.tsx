@@ -59,7 +59,12 @@ const e = (s: string, t: string, a = false): Edge => ({ id: `${s}-${t}`, source:
 const initialEdges = [e("1", "3"), e("1", "4", true), e("2", "4"), e("2", "5"), e("4", "6", true), e("5", "7"), e("6", "7")];
 
 const TAGS = ["AI", "Transformer", "Datasets", "NLP"];
-const WORKSPACES = ["Long-context LLMs", "Vision Transformers", "RLHF Survey"];
+type WsRow = { id: string; name: string };
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+const clean = (ns: Node<ArtifactData>[]) =>
+  ns.map(({ id, type, position, data }) => ({ id, type, position, data: { kind: data.kind, title: data.title, meta: data.meta, tags: data.tags } }));
+const cleanEdges = (es: Edge[]) => es.map(({ id, source, target, type, animated, sourceHandle, targetHandle }) => ({ id, source, target, type, animated, sourceHandle, targetHandle }));
 
 type Thought = { id: number; agent: string; text: string; status: "pending" | "approved" | "rejected" | "info"; time: string };
 const initialThoughts: Thought[] = [
@@ -70,13 +75,90 @@ const initialThoughts: Thought[] = [
 ];
 
 export default function Workspace() {
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  return <AuthGate>{() => <WorkspaceInner />}</AuthGate>;
+}
+
+function WorkspaceInner() {
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<ArtifactData>>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [left, setLeft] = useState(true);
   const [right, setRight] = useState(true);
   const [query, setQuery] = useState("");
   const [activeTags, setActiveTags] = useState<string[]>([]);
-  const [ws, setWs] = useState(WORKSPACES[0]);
+  const [workspaces, setWorkspaces] = useState<WsRow[]>([]);
+  const [wsId, setWsId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [save, setSave] = useState<SaveState>("idle");
+  const [rf, setRf] = useState<ReactFlowInstance<Node<ArtifactData>, Edge> | null>(null);
+  const skipSave = useRef(true);
+  const ws = workspaces.find((w) => w.id === wsId)?.name ?? "";
+
+  // Load workspace list (seed a sample one for new users)
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase.from("workspaces").select("id,name").order("created_at");
+      if (error) return toast.error(error.message);
+      let rows = data ?? [];
+      if (!rows.length) {
+        const { data: created, error: e2 } = await supabase.from("workspaces")
+          .insert({ name: "Long-context LLMs", nodes: clean(initialNodes) as never, edges: cleanEdges(initialEdges) as never })
+          .select("id,name").single();
+        if (e2) return toast.error(e2.message);
+        rows = [created];
+      }
+      setWorkspaces(rows);
+      setWsId(rows[0].id);
+    })();
+  }, []);
+
+  // Load selected workspace's canvas
+  useEffect(() => {
+    if (!wsId) return;
+    setLoaded(false);
+    (async () => {
+      const { data, error } = await supabase.from("workspaces").select("nodes,edges").eq("id", wsId).single();
+      if (error) return toast.error(error.message);
+      skipSave.current = true;
+      setNodes((data.nodes as unknown as Node<ArtifactData>[]) ?? []);
+      setEdges((data.edges as unknown as Edge[]) ?? []);
+      setLoaded(true);
+      setSave("saved");
+      setTimeout(() => rf?.fitView({ padding: 0.2 }), 50);
+    })();
+  }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Autosave on change (debounced); ignore pure selection changes
+  const saveKey = useMemo(() => JSON.stringify([clean(nodes), cleanEdges(edges)]), [nodes, edges]);
+  useEffect(() => {
+    if (!loaded || !wsId) return;
+    if (skipSave.current) { skipSave.current = false; return; }
+    setSave("saving");
+    const t = setTimeout(async () => {
+      const [ns, es] = JSON.parse(saveKey);
+      const { error } = await supabase.from("workspaces").update({ nodes: ns, edges: es, updated_at: new Date().toISOString() }).eq("id", wsId);
+      setSave(error ? "error" : "saved");
+    }, 800);
+    return () => clearTimeout(t);
+  }, [saveKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const newWorkspace = async () => {
+    const name = window.prompt("Workspace name", "New workspace")?.trim();
+    if (!name) return;
+    const { data, error } = await supabase.from("workspaces").insert({ name }).select("id,name").single();
+    if (error) return toast.error(error.message);
+    setWorkspaces((w) => [...w, data]);
+    setWsId(data.id);
+  };
+
+  const deleteWorkspace = async (id: string) => {
+    if (workspaces.length <= 1) return toast.error("Keep at least one workspace.");
+    if (!window.confirm("Delete this workspace?")) return;
+    const { error } = await supabase.from("workspaces").delete().eq("id", id);
+    if (error) return toast.error(error.message);
+    const rest = workspaces.filter((w) => w.id !== id);
+    setWorkspaces(rest);
+    if (id === wsId) setWsId(rest[0].id);
+  };
   const [thoughts, setThoughts] = useState(initialThoughts);
   const [clustering, setClustering] = useState(false);
 
