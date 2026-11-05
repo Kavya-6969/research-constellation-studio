@@ -10,7 +10,7 @@ import AuthGate from "./AuthGate";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
-  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2,
+  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -202,6 +202,7 @@ function WorkspaceInner() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas text-foreground">
+      <Toaster theme="dark" />
       {/* Header */}
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel px-3">
         <button onClick={() => setLeft(!left)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Toggle sidebar">
@@ -279,7 +280,7 @@ function WorkspaceInner() {
 
         {/* Canvas */}
         <main className="relative min-w-0 flex-1">
-          <ReactFlow nodes={shown} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
+          <ReactFlow nodes={shown} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onInit={setRf}
             nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.2 }} proOptions={{ hideAttribution: true }} colorMode="dark" minZoom={0.2}>
             <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--grid-dot)" bgColor="var(--canvas)" />
             <Controls showInteractive={false} />
