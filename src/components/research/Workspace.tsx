@@ -1,12 +1,16 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, Background, BackgroundVariant, Controls, MiniMap, Handle, Position,
-  useNodesState, useEdgesState, addEdge, type Node, type Edge, type NodeProps, type Connection,
+  useNodesState, useEdgesState, addEdge, type Node, type Edge, type NodeProps, type Connection, type ReactFlowInstance,
 } from "@xyflow/react";
+import { toast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
+import { supabase } from "@/integrations/supabase/client";
+import AuthGate from "./AuthGate";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
-  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2,
+  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -59,7 +63,12 @@ const e = (s: string, t: string, a = false): Edge => ({ id: `${s}-${t}`, source:
 const initialEdges = [e("1", "3"), e("1", "4", true), e("2", "4"), e("2", "5"), e("4", "6", true), e("5", "7"), e("6", "7")];
 
 const TAGS = ["AI", "Transformer", "Datasets", "NLP"];
-const WORKSPACES = ["Long-context LLMs", "Vision Transformers", "RLHF Survey"];
+type WsRow = { id: string; name: string };
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+const clean = (ns: Node<ArtifactData>[]) =>
+  ns.map(({ id, type, position, data }) => ({ id, type, position, data: { kind: data.kind, title: data.title, meta: data.meta, tags: data.tags } }));
+const cleanEdges = (es: Edge[]) => es.map(({ id, source, target, type, animated, sourceHandle, targetHandle }) => ({ id, source, target, type, animated, sourceHandle, targetHandle }));
 
 type Thought = { id: number; agent: string; text: string; status: "pending" | "approved" | "rejected" | "info"; time: string };
 const initialThoughts: Thought[] = [
@@ -70,13 +79,90 @@ const initialThoughts: Thought[] = [
 ];
 
 export default function Workspace() {
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  return <AuthGate>{() => <WorkspaceInner />}</AuthGate>;
+}
+
+function WorkspaceInner() {
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<ArtifactData>>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [left, setLeft] = useState(true);
   const [right, setRight] = useState(true);
   const [query, setQuery] = useState("");
   const [activeTags, setActiveTags] = useState<string[]>([]);
-  const [ws, setWs] = useState(WORKSPACES[0]);
+  const [workspaces, setWorkspaces] = useState<WsRow[]>([]);
+  const [wsId, setWsId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [save, setSave] = useState<SaveState>("idle");
+  const [rf, setRf] = useState<ReactFlowInstance<Node<ArtifactData>, Edge> | null>(null);
+  const skipSave = useRef(true);
+  const ws = workspaces.find((w) => w.id === wsId)?.name ?? "";
+
+  // Load workspace list (seed a sample one for new users)
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase.from("workspaces").select("id,name").order("created_at");
+      if (error) { toast.error(error.message); return; }
+      let rows = data ?? [];
+      if (!rows.length) {
+        const { data: created, error: e2 } = await supabase.from("workspaces")
+          .insert({ name: "Long-context LLMs", nodes: clean(initialNodes) as never, edges: cleanEdges(initialEdges) as never })
+          .select("id,name").single();
+        if (e2) { toast.error(e2.message); return; }
+        rows = [created];
+      }
+      setWorkspaces(rows);
+      setWsId(rows[0]!.id);
+    })();
+  }, []);
+
+  // Load selected workspace's canvas
+  useEffect(() => {
+    if (!wsId) return;
+    setLoaded(false);
+    (async () => {
+      const { data, error } = await supabase.from("workspaces").select("nodes,edges").eq("id", wsId).single();
+      if (error) { toast.error(error.message); return; }
+      skipSave.current = true;
+      setNodes((data.nodes as unknown as Node<ArtifactData>[]) ?? []);
+      setEdges((data.edges as unknown as Edge[]) ?? []);
+      setLoaded(true);
+      setSave("saved");
+      setTimeout(() => rf?.fitView({ padding: 0.2 }), 50);
+    })();
+  }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Autosave on change (debounced); ignore pure selection changes
+  const saveKey = useMemo(() => JSON.stringify([clean(nodes), cleanEdges(edges)]), [nodes, edges]);
+  useEffect(() => {
+    if (!loaded || !wsId) return;
+    if (skipSave.current) { skipSave.current = false; return; }
+    setSave("saving");
+    const t = setTimeout(async () => {
+      const [ns, es] = JSON.parse(saveKey);
+      const { error } = await supabase.from("workspaces").update({ nodes: ns, edges: es, updated_at: new Date().toISOString() }).eq("id", wsId);
+      setSave(error ? "error" : "saved");
+    }, 800);
+    return () => clearTimeout(t);
+  }, [saveKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const newWorkspace = async () => {
+    const name = window.prompt("Workspace name", "New workspace")?.trim();
+    if (!name) return;
+    const { data, error } = await supabase.from("workspaces").insert({ name }).select("id,name").single();
+    if (error) { toast.error(error.message); return; }
+    setWorkspaces((w) => [...w, data]);
+    setWsId(data.id);
+  };
+
+  const deleteWorkspace = async (id: string) => {
+    if (workspaces.length <= 1) { toast.error("Keep at least one workspace."); return; }
+    if (!window.confirm("Delete this workspace?")) return;
+    const { error } = await supabase.from("workspaces").delete().eq("id", id);
+    if (error) { toast.error(error.message); return; }
+    const rest = workspaces.filter((w) => w.id !== id);
+    setWorkspaces(rest);
+    if (id === wsId) setWsId(rest[0]!.id);
+  };
   const [thoughts, setThoughts] = useState(initialThoughts);
   const [clustering, setClustering] = useState(false);
 
@@ -116,6 +202,7 @@ export default function Workspace() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas text-foreground">
+      <Toaster theme="dark" />
       {/* Header */}
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel px-3">
         <button onClick={() => setLeft(!left)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Toggle sidebar">
@@ -128,6 +215,10 @@ export default function Workspace() {
           <span className="truncate text-sm text-muted-foreground">{ws}</span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <span className={cn("hidden text-[11px] md:inline", save === "error" ? "text-destructive" : "text-muted-foreground")}>
+            {save === "saving" ? "Saving…" : save === "saved" ? "All changes saved" : save === "error" ? "Save failed" : ""}
+          </span>
+          <button onClick={() => supabase.auth.signOut()} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="h-4 w-4" /></button>
           <div className="hidden items-center gap-2 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground sm:flex">
             <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-success" /></span>
             Agent Team · 4 active
@@ -151,11 +242,14 @@ export default function Workspace() {
               <input value={query} onChange={(ev) => setQuery(ev.target.value)} placeholder="Search nodes…"
                 className="w-full rounded-md border border-input bg-background py-1.5 pl-8 pr-2 text-xs outline-none placeholder:text-muted-foreground focus:border-primary" />
             </div>
-            <Section title="Workspaces" action={<Plus className="h-3.5 w-3.5" />}>
-              {WORKSPACES.map((w) => (
-                <button key={w} onClick={() => setWs(w)} className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs", w === ws ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60")}>
-                  <FolderKanban className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{w}</span>
-                </button>
+            <Section title="Workspaces" action={<Plus className="h-3.5 w-3.5" />} onAction={newWorkspace}>
+              {workspaces.map((w) => (
+                <div key={w.id} className={cn("group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs", w.id === wsId ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60")}>
+                  <button onClick={() => setWsId(w.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                    <FolderKanban className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{w.name}</span>
+                  </button>
+                  <button onClick={() => deleteWorkspace(w.id)} aria-label={`Delete ${w.name}`} className="opacity-0 hover:text-destructive group-hover:opacity-100"><Trash2 className="h-3 w-3" /></button>
+                </div>
               ))}
             </Section>
             <Section title="Tags">
@@ -186,7 +280,7 @@ export default function Workspace() {
 
         {/* Canvas */}
         <main className="relative min-w-0 flex-1">
-          <ReactFlow nodes={shown} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
+          <ReactFlow nodes={shown} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onInit={setRf}
             nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.2 }} proOptions={{ hideAttribution: true }} colorMode="dark" minZoom={0.2}>
             <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--grid-dot)" bgColor="var(--canvas)" />
             <Controls showInteractive={false} />
@@ -233,11 +327,11 @@ export default function Workspace() {
   );
 }
 
-function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+function Section({ title, action, onAction, children }: { title: string; action?: React.ReactNode; onAction?: () => void; children: React.ReactNode }) {
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between px-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        {title}{action && <button className="hover:text-foreground">{action}</button>}
+        {title}{action && <button onClick={onAction} aria-label={`Add ${title}`} className="hover:text-foreground">{action}</button>}
       </div>
       <div className="space-y-0.5">{children}</div>
     </div>
