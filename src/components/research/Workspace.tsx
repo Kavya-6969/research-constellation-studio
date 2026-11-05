@@ -1,8 +1,12 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, Background, BackgroundVariant, Controls, MiniMap, Handle, Position,
-  useNodesState, useEdgesState, addEdge, type Node, type Edge, type NodeProps, type Connection,
+  useNodesState, useEdgesState, addEdge, type Node, type Edge, type NodeProps, type Connection, type ReactFlowInstance,
 } from "@xyflow/react";
+import { toast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
+import { supabase } from "@/integrations/supabase/client";
+import AuthGate from "./AuthGate";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
@@ -210,6 +214,10 @@ function WorkspaceInner() {
           <span className="truncate text-sm text-muted-foreground">{ws}</span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <span className={cn("hidden text-[11px] md:inline", save === "error" ? "text-destructive" : "text-muted-foreground")}>
+            {save === "saving" ? "Saving…" : save === "saved" ? "All changes saved" : save === "error" ? "Save failed" : ""}
+          </span>
+          <button onClick={() => supabase.auth.signOut()} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="h-4 w-4" /></button>
           <div className="hidden items-center gap-2 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground sm:flex">
             <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-success" /></span>
             Agent Team · 4 active
@@ -233,11 +241,14 @@ function WorkspaceInner() {
               <input value={query} onChange={(ev) => setQuery(ev.target.value)} placeholder="Search nodes…"
                 className="w-full rounded-md border border-input bg-background py-1.5 pl-8 pr-2 text-xs outline-none placeholder:text-muted-foreground focus:border-primary" />
             </div>
-            <Section title="Workspaces" action={<Plus className="h-3.5 w-3.5" />}>
-              {WORKSPACES.map((w) => (
-                <button key={w} onClick={() => setWs(w)} className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs", w === ws ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60")}>
-                  <FolderKanban className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{w}</span>
-                </button>
+            <Section title="Workspaces" action={<Plus className="h-3.5 w-3.5" />} onAction={newWorkspace}>
+              {workspaces.map((w) => (
+                <div key={w.id} className={cn("group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs", w.id === wsId ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60")}>
+                  <button onClick={() => setWsId(w.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                    <FolderKanban className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{w.name}</span>
+                  </button>
+                  <button onClick={() => deleteWorkspace(w.id)} aria-label={`Delete ${w.name}`} className="opacity-0 hover:text-destructive group-hover:opacity-100"><Trash2 className="h-3 w-3" /></button>
+                </div>
               ))}
             </Section>
             <Section title="Tags">
@@ -315,11 +326,11 @@ function WorkspaceInner() {
   );
 }
 
-function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+function Section({ title, action, onAction, children }: { title: string; action?: React.ReactNode; onAction?: () => void; children: React.ReactNode }) {
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between px-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        {title}{action && <button className="hover:text-foreground">{action}</button>}
+        {title}{action && <button onClick={onAction} aria-label={`Add ${title}`} className="hover:text-foreground">{action}</button>}
       </div>
       <div className="space-y-0.5">{children}</div>
     </div>
