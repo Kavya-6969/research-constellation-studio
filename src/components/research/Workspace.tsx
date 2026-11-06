@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { supabase } from "@/integrations/supabase/client";
 import AuthGate from "./AuthGate";
+import AnalyzeDialog from "./AnalyzeDialog";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
@@ -167,6 +168,16 @@ function WorkspaceInner() {
   };
   const [thoughts, setThoughts] = useState(initialThoughts);
   const [clustering, setClustering] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const addAnalyzed = (r: { kind: "paper" | "code"; title: string; summary: string; tags: string[]; links: string[] }) => {
+    const id = String(Date.now());
+    const xs = nodes.map((nd) => nd.position.x);
+    setNodes((ns) => [...ns, n(id, (xs.length ? Math.max(...xs) : 0) + 360, 200, { kind: r.kind, title: r.title, meta: r.summary, tags: r.tags })]);
+    setEdges((es) => [...es, ...r.links.map((t) => e(id, t, true))]);
+    setThoughts((t) => [{ id: Date.now(), agent: "Analyst", text: `Summarized "${r.title}" and linked ${r.links.length} card(s).`, status: "info", time: "now" }, ...t]);
+    setAiOpen(false);
+    toast.success("Card added to canvas");
+  };
 
   const onConnect = useCallback((c: Connection) => setEdges((es) => addEdge({ ...c, type: "smoothstep" }, es)), [setEdges]);
 
@@ -205,6 +216,7 @@ function WorkspaceInner() {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas text-foreground">
       <Toaster theme="dark" />
+      {aiOpen && <AnalyzeDialog items={nodes.map((nd) => ({ id: nd.id, kind: nd.data.kind, title: nd.data.title, tags: nd.data.tags }))} onClose={() => setAiOpen(false)} onAdd={addAnalyzed} />}
       {/* Header */}
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel px-3">
         <button onClick={() => setLeft(!left)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Toggle sidebar">
@@ -225,6 +237,7 @@ function WorkspaceInner() {
             <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-success" /></span>
             Agent Team · 4 active
           </div>
+          <button onClick={() => setAiOpen(true)} className="flex items-center gap-1.5 rounded-md border border-primary/50 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"><Sparkles className="h-3.5 w-3.5" />AI Summarize</button>
           <button onClick={upload} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"><Upload className="h-3.5 w-3.5" />Upload Source</button>
           <button onClick={cluster} disabled={clustering} className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-70">
             {clustering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}Cluster Canvas
