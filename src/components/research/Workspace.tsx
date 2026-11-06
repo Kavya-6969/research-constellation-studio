@@ -62,7 +62,7 @@ const initialNodes = [
   n("7", 720, 340, { kind: "note", title: "Compare fine-tuning cost of BERT vs Longformer on GLUE.", meta: "You · today", tags: ["AI"] }),
 ];
 const e = (s: string, t: string, a = false): Edge => ({ id: `${s}-${t}`, source: s, target: t, type: "smoothstep", animated: a });
-const initialEdges = [e("1", "3"), e("1", "4", true), e("2", "4"), e("2", "5"), e("4", "6", true), e("5", "7"), e("6", "7")];
+const initialEdges = [e("1", "3"), e("1", "4", true), e("2", "4"), e("2", "5"), e("4", "6", true), e("5", "7"), e("6", "7"), e("6", "8")];
 
 const TAGS = ["AI", "Transformer", "Datasets", "NLP"];
 type WsRow = { id: string; name: string };
