@@ -19,7 +19,7 @@ export const analyzeSource = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => Input.parse(d))
   .handler(async ({ data }): Promise<AnalyzeResult> => {
     const empty = { title: "", summary: "", tags: [], connections: [] };
-    const apiKey = process.env.LOVABLE_API_KEY;
+    const apiKey = process.env['LOVABLE_API_KEY'];
     if (!apiKey) return { ...empty, error: "AI is not configured." };
     const { createOpenAI } = await import("@ai-sdk/openai");
     const { streamText, Output } = await import("ai");
