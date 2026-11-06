@@ -10,17 +10,18 @@ import AuthGate from "./AuthGate";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
-  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2,
+  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type Kind = "paper" | "dataset" | "note" | "agent";
+type Kind = "paper" | "dataset" | "note" | "code" | "agent";
 type ArtifactData = { kind: Kind; title: string; meta: string; tags: string[]; dim?: boolean };
 
 const KIND: Record<Kind, { icon: typeof FileText; label: string; text: string; bg: string }> = {
   paper: { icon: FileText, label: "Paper", text: "text-node-paper", bg: "bg-node-paper/10" },
   dataset: { icon: Database, label: "Dataset", text: "text-node-dataset", bg: "bg-node-dataset/10" },
   note: { icon: StickyNote, label: "Note", text: "text-node-note", bg: "bg-node-note/10" },
+  code: { icon: Code2, label: "Code", text: "text-node-code", bg: "bg-node-code/10" },
   agent: { icon: Brain, label: "Agent Thought", text: "text-node-agent", bg: "bg-node-agent/10" },
 };
 
@@ -57,6 +58,7 @@ const initialNodes = [
   n("4", 360, 220, { kind: "agent", title: "Self-attention scales O(n²) — investigate sparse variants for long context.", meta: "Analyst Agent · 2m ago", tags: ["AI", "Transformer"] }),
   n("5", 360, 420, { kind: "dataset", title: "GLUE Benchmark", meta: "9 tasks · 1.2GB", tags: ["Datasets"] }),
   n("6", 720, 120, { kind: "paper", title: "Longformer: The Long-Document Transformer", meta: "Beltagy et al. · 2020", tags: ["Transformer"] }),
+  n("8", 720, 540, { kind: "code", title: "huggingface/transformers — modeling_longformer.py", meta: "Python · GitHub", tags: ["AI", "Transformer"] }),
   n("7", 720, 340, { kind: "note", title: "Compare fine-tuning cost of BERT vs Longformer on GLUE.", meta: "You · today", tags: ["AI"] }),
 ];
 const e = (s: string, t: string, a = false): Edge => ({ id: `${s}-${t}`, source: s, target: t, type: "smoothstep", animated: a });
@@ -179,7 +181,7 @@ function WorkspaceInner() {
   const cluster = () => {
     setClustering(true);
     setTimeout(() => {
-      const order: Kind[] = ["paper", "dataset", "agent", "note"];
+      const order: Kind[] = ["paper", "dataset", "code", "agent", "note"];
       setNodes((ns) => {
         const cnt: Record<string, number> = {};
         return ns.map((nd) => {
