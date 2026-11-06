@@ -41,7 +41,7 @@ function ArtifactNode({ data, selected }: NodeProps<Node<ArtifactData>>) {
         <span className={cn("text-[10px] font-medium uppercase tracking-wider", k.text)}>{k.label}</span>
       </div>
       <p className="text-sm font-medium leading-snug text-card-foreground">{data.title}</p>
-      <p className="mt-1 font-mono text-[11px] text-muted-foreground">{data.meta}</p>
+      <p className="mt-1 font-mono text-[11px] text-muted-foreground line-clamp-3">{data.meta}</p>
       <div className="mt-2.5 flex flex-wrap gap-1">
         {data.tags.map((t) => <span key={t} className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">#{t}</span>)}
       </div>
