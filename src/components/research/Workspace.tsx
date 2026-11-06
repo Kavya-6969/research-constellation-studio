@@ -267,7 +267,7 @@ function WorkspaceInner() {
                 </div>
               ))}
             </Section>
-            <Section title="Tags">
+            <Section title="TAGS">
               {TAGS.map((t) => {
                 const on = activeTags.includes(t);
                 return (
