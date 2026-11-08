@@ -12,7 +12,7 @@ import AgentPanel, { type Proposal } from "./AgentPanel";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
-  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2,
+  PanelRightOpen, Upload, Network, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
