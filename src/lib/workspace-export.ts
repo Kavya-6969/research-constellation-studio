@@ -1,7 +1,7 @@
 import { createExperiment, experimentDeltas, type Experiment } from "./experiments";
 
-type ExportNode = { id: string; type?: string; position: { x: number; y: number }; data: { kind: string; title: string; meta: string; tags: string[]; experiment?: Experiment } };
-type ExportEdge = { id: string; source: string; target: string; type?: string; animated?: boolean; sourceHandle?: string | null; targetHandle?: string | null };
+type ExportNode = { id: string; type?: string | undefined; position: { x: number; y: number }; data: { kind: string; title: string; meta: string; tags: string[]; experiment?: Experiment } };
+type ExportEdge = { id: string; source: string; target: string; type?: string | undefined; animated?: boolean | undefined; sourceHandle?: string | null | undefined; targetHandle?: string | null | undefined };
 export function buildWorkspaceExport(name: string, nodes: ExportNode[], edges: ExportEdge[]) {
   return {
     schemaVersion: 1, name, exportedAt: new Date().toISOString(),
