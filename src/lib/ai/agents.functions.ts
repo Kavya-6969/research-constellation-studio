@@ -41,7 +41,7 @@ export const runController = createServerFn({ method: "POST" })
     const r = await runStructured(ControllerSchema,
       `You are the Controller of a research agent team. Route the user's goal to specialists. Available: ${data.available.join(", ")}. literature = finds and reviews papers/datasets; environment = proposes code repos, setup and tooling; experiment = designs and simulates experiments, predicts results. Give a one-sentence thought, a confidence 0-1, and 1-3 assignments (only available agents) each with a concrete one-sentence task.`,
       `Goal: ${data.goal}\n\nCanvas items:\n${JSON.stringify(data.items)}`);
-    if (!r.out) return { thought: "", confidence: 0, assignments: [], error: r.error };
+    if (!r.out) return { thought: "", confidence: 0, assignments: [], error: r.error ?? "The agent failed." };
     return { ...r.out, confidence: Math.max(0, Math.min(1, r.out.confidence)), assignments: r.out.assignments.filter((a) => data.available.includes(a.agent)).slice(0, 3) };
   });
 
@@ -64,7 +64,7 @@ export const runAgent = createServerFn({ method: "POST" })
     const r = await runStructured(AgentSchema,
       `You are the ${ROLE[data.agent]} Return a one-sentence thought, confidence 0-1, 3-5 short steps you took, and 1-3 proposed canvas cards. Each card: short title (max 10 words), 1-2 sentence summary, up to 3 tags, and links = ids of existing canvas items it relates to (exact ids only).`,
       `Overall goal: ${data.goal}\nYour task: ${data.task}\n\nCanvas items:\n${JSON.stringify(data.items)}`);
-    if (!r.out) return { thought: "", confidence: 0, steps: [], proposals: [], error: r.error };
+    if (!r.out) return { thought: "", confidence: 0, steps: [], proposals: [], error: r.error ?? "The agent failed." };
     const ids = new Set(data.items.map((i) => i.id));
     return {
       ...r.out, confidence: Math.max(0, Math.min(1, r.out.confidence)), steps: r.out.steps.slice(0, 5),
