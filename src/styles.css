@@ -54,6 +54,7 @@
   --color-node-note: var(--node-note);
   --color-node-agent: var(--node-agent);
   --color-node-code: var(--node-code);
+  --color-node-experiment: var(--node-experiment);
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;
   --color-chart-1: var(--chart-1);
@@ -101,6 +102,7 @@
   --node-note: oklch(0.8 0.14 85);
   --node-agent: oklch(0.72 0.18 330);
   --node-code: oklch(0.74 0.16 145);
+  --node-experiment: oklch(0.78 0.15 65);
   --glow: 0 0 0 1px var(--primary), 0 0 24px -4px color-mix(in oklab, var(--primary) 60%, transparent);
   --chart-1: oklch(0.65 0.2 275); --chart-2: oklch(0.75 0.14 195); --chart-3: oklch(0.8 0.14 85); --chart-4: oklch(0.72 0.18 330); --chart-5: oklch(0.72 0.17 155);
   --sidebar: var(--panel); --sidebar-foreground: var(--foreground); --sidebar-primary: var(--primary); --sidebar-primary-foreground: var(--primary-foreground); --sidebar-accent: var(--accent); --sidebar-accent-foreground: var(--foreground); --sidebar-border: var(--border); --sidebar-ring: var(--ring);
