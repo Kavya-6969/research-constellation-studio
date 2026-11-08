@@ -8,10 +8,11 @@ import { Toaster } from "@/components/ui/sonner";
 import { supabase } from "@/integrations/supabase/client";
 import AuthGate from "./AuthGate";
 import AnalyzeDialog from "./AnalyzeDialog";
+import AgentPanel, { type Proposal } from "./AgentPanel";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
-  PanelRightOpen, Upload, Network, Check, X, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2,
+  PanelRightOpen, Upload, Network, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -72,14 +73,6 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 const clean = (ns: Node<ArtifactData>[]) =>
   ns.map(({ id, type, position, data }) => ({ id, type, position, data: { kind: data.kind, title: data.title, meta: data.meta, tags: data.tags } }));
 const cleanEdges = (es: Edge[]) => es.map(({ id, source, target, type, animated, sourceHandle, targetHandle }) => ({ id, source, target, type, animated, sourceHandle, targetHandle }));
-
-type Thought = { id: number; agent: string; text: string; status: "pending" | "approved" | "rejected" | "info"; time: string };
-const initialThoughts: Thought[] = [
-  { id: 1, agent: "Controller", text: "Proposing to link Longformer to the attention-complexity thought and add 3 related sparse-attention papers.", status: "pending", time: "now" },
-  { id: 2, agent: "Retriever", text: "Found 'Big Bird: Transformers for Longer Sequences' (Zaheer 2020). Add to canvas?", status: "pending", time: "1m" },
-  { id: 3, agent: "Analyst", text: "Summarized BERT methodology. Extracted 4 key claims.", status: "info", time: "3m" },
-  { id: 4, agent: "Controller", text: "Clustered 7 artifacts into 2 themes: Architecture, Evaluation.", status: "approved", time: "6m" },
-];
 
 export default function Workspace() {
   return <AuthGate>{() => <WorkspaceInner />}</AuthGate>;
@@ -166,7 +159,6 @@ function WorkspaceInner() {
     setWorkspaces(rest);
     if (id === wsId) setWsId(rest[0]!.id);
   };
-  const [thoughts, setThoughts] = useState(initialThoughts);
   const [clustering, setClustering] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const addAnalyzed = (r: { kind: "paper" | "code"; title: string; summary: string; tags: string[]; links: string[] }) => {
@@ -174,7 +166,6 @@ function WorkspaceInner() {
     const xs = nodes.map((nd) => nd.position.x);
     setNodes((ns) => [...ns, n(id, (xs.length ? Math.max(...xs) : 0) + 360, 200, { kind: r.kind, title: r.title, meta: r.summary, tags: r.tags })]);
     setEdges((es) => [...es, ...r.links.map((t) => e(id, t, true))]);
-    setThoughts((t) => [{ id: Date.now(), agent: "Analyst", text: `Summarized "${r.title}" and linked ${r.links.length} card(s).`, status: "info", time: "now" }, ...t]);
     setAiOpen(false);
     toast.success("Card added to canvas");
   };
@@ -187,7 +178,6 @@ function WorkspaceInner() {
     return { ...nd, data: { ...nd.data, dim: !match } };
   }), [nodes, query, activeTags]);
 
-  const pending = thoughts.filter((t) => t.status === "pending").length;
 
   const cluster = () => {
     setClustering(true);
@@ -200,7 +190,6 @@ function WorkspaceInner() {
           return { ...nd, position: { x: col * 320, y: row * 200 } };
         });
       });
-      setThoughts((t) => [{ id: Date.now(), agent: "Controller", text: "Re-clustered canvas by artifact type.", status: "info", time: "now" }, ...t]);
       setClustering(false);
     }, 700);
   };
@@ -208,10 +197,15 @@ function WorkspaceInner() {
   const upload = () => {
     const id = String(Date.now());
     setNodes((ns) => [...ns, n(id, 1080, 220, { kind: "paper", title: "Untitled uploaded source.pdf", meta: "Parsing…", tags: ["AI"] })]);
-    setThoughts((t) => [{ id: Date.now(), agent: "Retriever", text: "New source uploaded. Link it to related Transformer papers?", status: "pending", time: "now" }, ...t]);
   };
 
-  const decide = (id: number, status: "approved" | "rejected") => setThoughts((t) => t.map((x) => (x.id === id ? { ...x, status } : x)));
+  const spawn = (p: Proposal, agent: string) => {
+    const id = `${agent}-${Date.now()}`;
+    const xs = nodes.map((nd) => nd.position.x);
+    setNodes((ns) => [...ns, n(id, (xs.length ? Math.max(...xs) : 0) + 360, 80 + Math.random() * 400, { kind: p.kind, title: p.title, meta: p.summary, tags: p.tags })]);
+    setEdges((es) => [...es, ...p.links.map((t) => e(id, t, true))]);
+    toast.success(`Added “${p.title}”`);
+  };
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas text-foreground">
@@ -235,7 +229,7 @@ function WorkspaceInner() {
           <button onClick={() => supabase.auth.signOut()} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="h-4 w-4" /></button>
           <div className="hidden items-center gap-2 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground sm:flex">
             <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-success" /></span>
-            Agent Team · 4 active
+            Agent Team · 4 agents
           </div>
           <button onClick={() => setAiOpen(true)} className="flex items-center gap-1.5 rounded-md border border-primary/50 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"><Sparkles className="h-3.5 w-3.5" />AI Summarize</button>
           <button onClick={upload} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"><Upload className="h-3.5 w-3.5" />Upload Source</button>
@@ -305,37 +299,7 @@ function WorkspaceInner() {
 
         {/* Right agent sidebar */}
         <aside className={cn("flex shrink-0 flex-col overflow-hidden border-l border-border bg-panel transition-all duration-300", right ? "w-80" : "w-0 border-l-0")}>
-          <div className="flex w-80 items-center justify-between border-b border-border px-4 py-3">
-            <div>
-              <p className="text-sm font-semibold">Agent Activity</p>
-              <p className="text-[11px] text-muted-foreground">Controller · live feed</p>
-            </div>
-            {pending > 0 && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">{pending} awaiting</span>}
-          </div>
-          <div className="mx-4 mt-3 w-72 rounded-md border border-border bg-background/50 p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Current task</p>
-            <p className="mt-1 flex items-center gap-2 text-xs"><Loader2 className="h-3 w-3 animate-spin text-primary" />Mapping citations for long-context papers</p>
-            <div className="mt-2 h-1 overflow-hidden rounded-full bg-secondary"><div className="h-full w-3/5 rounded-full bg-primary" /></div>
-          </div>
-          <div className="min-h-0 w-80 flex-1 space-y-2 overflow-y-auto p-4">
-            {thoughts.map((t) => (
-              <div key={t.id} className={cn("rounded-md border bg-card p-3 transition-colors", t.status === "pending" ? "border-primary/40" : "border-border")}>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-[11px] font-medium"><Brain className="h-3 w-3 text-node-agent" />{t.agent}</span>
-                  <span className="font-mono text-[10px] text-muted-foreground">{t.time}</span>
-                </div>
-                <p className="text-xs leading-relaxed text-muted-foreground">{t.text}</p>
-                {t.status === "pending" ? (
-                  <div className="mt-2.5 flex gap-1.5">
-                    <button onClick={() => decide(t.id, "approved")} className="flex flex-1 items-center justify-center gap-1 rounded-md bg-success/15 py-1 text-[11px] font-medium text-success hover:bg-success/25"><Check className="h-3 w-3" />Approve</button>
-                    <button onClick={() => decide(t.id, "rejected")} className="flex flex-1 items-center justify-center gap-1 rounded-md bg-destructive/15 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/25"><X className="h-3 w-3" />Reject</button>
-                  </div>
-                ) : t.status !== "info" && (
-                  <p className={cn("mt-2 text-[10px] font-medium uppercase tracking-wider", t.status === "approved" ? "text-success" : "text-destructive")}>{t.status}</p>
-                )}
-              </div>
-            ))}
-          </div>
+          <AgentPanel items={nodes.map((nd) => ({ id: nd.id, kind: nd.data.kind, title: nd.data.title, tags: nd.data.tags }))} onSpawn={spawn} />
         </aside>
       </div>
     </div>
