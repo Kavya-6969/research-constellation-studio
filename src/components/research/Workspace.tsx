@@ -258,9 +258,9 @@ function WorkspaceInner() {
         <Button variant="ghost" size="icon" onClick={() => { setLeft(!left); if (window.innerWidth <= 640) setRight(false); }} className="h-7 w-7 text-muted-foreground" aria-label="Toggle sidebar" title="Toggle sidebar">
           {left ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
         </Button>
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-primary-foreground"><Network className="h-3.5 w-3.5" /></div>
-          <span className="text-sm font-semibold">GLIMPSE</span>
+        <div className="flex min-w-0 flex-1 items-center gap-2 max-sm:basis-[calc(100%-3rem)]">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground"><Network className="h-3.5 w-3.5" /></div>
+          <span className="shrink-0 text-sm font-semibold">GLIMPSE</span>
           <span className="text-muted-foreground">/</span>
           <span className="truncate text-sm text-muted-foreground">{ws}</span>
         </div>
