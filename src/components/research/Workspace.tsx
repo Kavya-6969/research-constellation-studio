@@ -10,19 +10,23 @@ import AuthGate from "./AuthGate";
 import AnalyzeDialog from "./AnalyzeDialog";
 import AgentPanel, { type Proposal } from "./AgentPanel";
 import ExperimentPanel from "./ExperimentPanel";
+import TimelineDrawer from "./TimelineDrawer";
+import WhyDialog from "./WhyDialog";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { createExperiment, type Experiment } from "@/lib/experiments";
 import { buildWorkspaceExport, downloadWorkspace, workspaceMarkdown } from "@/lib/workspace-export";
+import { appendEvents, diffCanvas, inferTimeline, parseTimeline, replayTimeline, touchedBy, type Canvas, type TimelineEdge, type TimelineEvent, type TimelineNode } from "@/lib/timeline";
+import { listDirty, markSynced, readList, readWorkspace, removeWorkspace, writeList, writeWorkspace, type CachedWorkspace } from "@/lib/offline-cache";
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
-  PanelRightOpen, Upload, Network, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2, FlaskConical, Download,
+  PanelRightOpen, Upload, Network, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2, FlaskConical, Download, History, Scale, RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Kind = "paper" | "dataset" | "note" | "code" | "agent" | "experiment";
-type ArtifactData = { kind: Kind; title: string; meta: string; tags: string[]; dim?: boolean; experiment?: Experiment };
+type ArtifactData = { kind: Kind; title: string; meta: string; tags: string[]; dim?: boolean; fresh?: boolean; experiment?: Experiment };
 
 const KIND: Record<Kind, { icon: typeof FileText; label: string; text: string; bg: string }> = {
   paper: { icon: FileText, label: "Paper", text: "text-node-paper", bg: "bg-node-paper/10" },
@@ -39,7 +43,8 @@ function ArtifactNode({ data, selected }: NodeProps<Node<ArtifactData>>) {
   return (
     <div className={cn(
       "w-64 rounded-lg border border-border bg-card p-3 transition-all duration-200",
-      selected ? "shadow-glow" : "hover:border-muted-foreground/40",
+      selected || data.fresh ? "shadow-glow" : "hover:border-muted-foreground/40",
+      data.fresh && "border-primary",
       data.dim && "opacity-25",
     )}>
       <Handle type="target" position={Position.Left} />
@@ -78,17 +83,17 @@ const initialEdges = [e("1", "3"), e("1", "4", true), e("2", "4"), e("2", "5"), 
 
 const TAGS = ["AI", "Transformer", "Datasets", "NLP"];
 type WsRow = { id: string; name: string };
-type SaveState = "idle" | "saving" | "saved" | "error";
+type SaveState = "idle" | "saving" | "saved" | "error" | "offline";
 
 const clean = (ns: Node<ArtifactData>[]) =>
   ns.map(({ id, type, position, data }) => ({ id, type, position, data: { kind: data.kind, title: data.title, meta: data.meta, tags: data.tags, ...(data.kind === "experiment" ? { experiment: data.experiment ?? createExperiment() } : {}) } }));
 const cleanEdges = (es: Edge[]) => es.map(({ id, source, target, type, animated, sourceHandle, targetHandle }) => ({ id, source, target, type, animated, sourceHandle, targetHandle }));
 
 export default function Workspace() {
-  return <AuthGate>{() => <WorkspaceInner />}</AuthGate>;
+  return <AuthGate>{(s) => <WorkspaceInner userId={s.user.id} />}</AuthGate>;
 }
 
-function WorkspaceInner() {
+function WorkspaceInner({ userId }: { userId: string }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<ArtifactData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [left, setLeft] = useState(true);
@@ -103,6 +108,61 @@ function WorkspaceInner() {
   const [experimentId, setExperimentId] = useState<string | null>(null);
   const selectedExperiment = nodes.find((node) => node.id === experimentId && node.data.kind === "experiment");
   const skipSave = useRef(true);
+  const [online, setOnline] = useState(true);
+  const [pending, setPending] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const timelineRef = useRef<TimelineEvent[]>([]);
+  const baseRef = useRef<Canvas | null>(null);
+  const [replay, setReplay] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const [replayNodes, setReplayNodes, onReplayNodesChange] = useNodesState<Node<ArtifactData>>([]);
+  const [replayEdges, setReplayEdges] = useState<Edge[]>([]);
+  const replaying = replay !== null;
+  const store = () => window.localStorage;
+  const refreshPending = () => setPending(listDirty(store(), userId).length);
+
+  // Push one cached workspace to the cloud; it stays pending locally until this succeeds.
+  const pushRemote = async (c: CachedWorkspace) => {
+    const { error } = await supabase.from("workspaces")
+      .update({ nodes: c.nodes as never, edges: c.edges as never, timeline: c.timeline as never, updated_at: c.updatedAt }).eq("id", c.id);
+    if (!error) markSynced(store(), userId, c.id, c.updatedAt);
+    return !error;
+  };
+  const persist = async (id: string, ns: unknown[], es: unknown[], tl: TimelineEvent[]) => {
+    const c: CachedWorkspace = { id, nodes: ns, edges: es, timeline: tl, updatedAt: new Date().toISOString(), dirty: true };
+    writeWorkspace(store(), userId, c);
+    if (!navigator.onLine) { setSave("offline"); refreshPending(); return; }
+    setSave("saving");
+    const ok = await pushRemote(c);
+    setSave(ok ? "saved" : "error");
+    refreshPending();
+  };
+  const flush = useCallback(async () => {
+    if (!navigator.onLine) return;
+    const dirty = listDirty(window.localStorage, userId);
+    if (!dirty.length) { setPending(0); return; }
+    setSyncing(true);
+    let failed = 0;
+    for (const c of dirty) if (!(await pushRemote(c))) failed++;
+    setSyncing(false);
+    setPending(listDirty(window.localStorage, userId).length);
+    setSave(failed ? "error" : "saved");
+    if (failed) toast.error("Some changes couldn't sync yet. They're kept on this device.");
+    else toast.success("Back online — offline changes synced");
+  }, [userId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const up = () => { setOnline(true); void flush(); };
+    const down = () => { setOnline(false); setSave("offline"); };
+    setOnline(navigator.onLine);
+    refreshPending();
+    if (navigator.onLine) void flush(); else setSave("offline");
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
+  }, [flush]); // eslint-disable-line react-hooks/exhaustive-deps
   const ws = workspaces.find((w) => w.id === wsId)?.name ?? "";
 
   useEffect(() => {
@@ -113,36 +173,69 @@ function WorkspaceInner() {
   // Load workspace list (seed a sample one for new users)
   useEffect(() => {
     (async () => {
+      const cached = readList(store(), userId);
+      const useCached = (msg: string) => {
+        if (!cached.length) { toast.error(msg); return; }
+        setWorkspaces(cached); setWsId(cached[0]?.id ?? null);
+      };
+      if (!navigator.onLine) { useCached("You're offline and no workspaces are saved on this device yet."); return; }
       const { data, error } = await supabase.from("workspaces").select("id,name").order("created_at");
-      if (error) { toast.error(error.message); return; }
+      if (error) { useCached(error.message); return; }
       let rows = data ?? [];
       if (!rows.length) {
+        const seed = { nodes: clean(initialNodes), edges: cleanEdges(initialEdges) };
         const { data: created, error: e2 } = await supabase.from("workspaces")
-          .insert({ name: "Long-context LLMs", nodes: clean(initialNodes) as never, edges: cleanEdges(initialEdges) as never })
+          .insert({ name: "Long-context LLMs", nodes: seed.nodes as never, edges: seed.edges as never, timeline: inferTimeline(seed, new Date().toISOString()) as never })
           .select("id,name").single();
         if (e2) { toast.error(e2.message); return; }
         rows = [created];
       }
+      writeList(store(), userId, rows);
       setWorkspaces(rows);
       setWsId(rows[0]?.id ?? null);
     })();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load selected workspace's canvas
   useEffect(() => {
     if (!wsId) return;
     setExperimentId(null);
+    setReplay(null);
     setLoaded(false);
+    let cancelled = false;
     (async () => {
-      const { data, error } = await supabase.from("workspaces").select("nodes,edges").eq("id", wsId).single();
-      if (error) { toast.error(error.message); return; }
+      // Local copy wins when it has unsynced edits or there is no connection.
+      const local = readWorkspace(store(), userId, wsId);
+      let src: { nodes: unknown; edges: unknown; timeline: unknown } | null = local?.dirty || !navigator.onLine ? local : null;
+      if (!src) {
+        const { data, error } = await supabase.from("workspaces").select("nodes,edges,timeline").eq("id", wsId).single();
+        if (cancelled) return;
+        if (error) src = local;
+        else {
+          src = data;
+          writeWorkspace(store(), userId, { id: wsId, nodes: (data.nodes as unknown[]) ?? [], edges: (data.edges as unknown[]) ?? [], timeline: parseTimeline(data.timeline), updatedAt: new Date().toISOString(), dirty: false });
+        }
+      }
+      if (cancelled) return;
+      if (!src) { toast.error("This workspace isn't saved on this device yet. Reconnect to open it."); return; }
+      const ns = (src.nodes as Node<ArtifactData>[] | null) ?? [];
+      const es = (src.edges as Edge[] | null) ?? [];
+      const base: Canvas = { nodes: clean(ns), edges: cleanEdges(es) as TimelineEdge[] };
+      let tl = parseTimeline(src.timeline);
+      const inferred = !tl.length && ns.length > 0;
+      if (inferred) tl = inferTimeline(base, new Date().toISOString());
+      baseRef.current = base;
+      timelineRef.current = tl;
+      setTimeline(tl);
       skipSave.current = true;
-      setNodes((data.nodes as unknown as Node<ArtifactData>[]) ?? []);
-      setEdges((data.edges as unknown as Edge[]) ?? []);
+      setNodes(ns);
+      setEdges(es);
       setLoaded(true);
-      setSave("saved");
+      setSave(navigator.onLine ? "saved" : "offline");
+      if (inferred) void persist(wsId, base.nodes, base.edges, tl);
       setTimeout(() => rf?.fitView({ padding: 0.2 }), 50);
     })();
+    return () => { cancelled = true; };
   }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Autosave on change (debounced); ignore pure selection changes
@@ -150,30 +243,37 @@ function WorkspaceInner() {
   useEffect(() => {
     if (!loaded || !wsId) return;
     if (skipSave.current) { skipSave.current = false; return; }
-    setSave("saving");
-    const t = setTimeout(async () => {
-      const [ns, es] = JSON.parse(saveKey);
-      const { error } = await supabase.from("workspaces").update({ nodes: ns, edges: es, updated_at: new Date().toISOString() }).eq("id", wsId);
-      setSave(error ? "error" : "saved");
+    if (navigator.onLine) setSave("saving");
+    const t = setTimeout(() => {
+      const [ns, es] = JSON.parse(saveKey) as [TimelineNode[], TimelineEdge[]];
+      const tl = appendEvents(timelineRef.current, diffCanvas(baseRef.current, { nodes: ns, edges: es }, new Date().toISOString()));
+      baseRef.current = { nodes: ns, edges: es };
+      timelineRef.current = tl;
+      setTimeline(tl);
+      void persist(wsId, ns, es, tl);
     }, 800);
     return () => clearTimeout(t);
   }, [saveKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const newWorkspace = async () => {
+    if (!navigator.onLine) { toast.error("Reconnect to create a new workspace."); return; }
     const name = window.prompt("Workspace name", "New workspace")?.trim();
     if (!name) return;
     const { data, error } = await supabase.from("workspaces").insert({ name }).select("id,name").single();
     if (error) { toast.error(error.message); return; }
-    setWorkspaces((w) => [...w, data]);
+    setWorkspaces((w) => { const next = [...w, data]; writeList(store(), userId, next); return next; });
     setWsId(data.id);
   };
 
   const deleteWorkspace = async (id: string) => {
     if (workspaces.length <= 1) { toast.error("Keep at least one workspace."); return; }
+    if (!navigator.onLine) { toast.error("Reconnect to delete workspaces."); return; }
     if (!window.confirm("Delete this workspace?")) return;
     const { error } = await supabase.from("workspaces").delete().eq("id", id);
     if (error) { toast.error(error.message); return; }
     const rest = workspaces.filter((w) => w.id !== id);
+    removeWorkspace(store(), userId, id);
+    writeList(store(), userId, rest);
     setWorkspaces(rest);
     if (id === wsId) setWsId(rest[0]?.id ?? null);
   };
@@ -184,6 +284,7 @@ function WorkspaceInner() {
     const xs = nodes.map((nd) => nd.position.x);
     setNodes((ns) => [...ns, n(id, (xs.length ? Math.max(...xs) : 0) + 360, 200, { kind: r.kind, title: r.title, meta: r.summary, tags: r.tags })]);
     setEdges((es) => [...es, ...r.links.map((t) => e(id, t, true))]);
+    setReplay(null);
     setAiOpen(false);
     toast.success("Card added to canvas");
   };
@@ -196,6 +297,21 @@ function WorkspaceInner() {
     return { ...nd, data: { ...nd.data, dim: !match } };
   }), [nodes, query, activeTags]);
 
+
+  useEffect(() => {
+    if (replay === null) return;
+    const snap = replayTimeline(timeline, replay);
+    const live = new Map(nodes.map((nd) => [nd.id, nd.position]));
+    const hit = touchedBy(timeline[replay]);
+    setReplayNodes(snap.nodes.map((nd) => ({
+      id: nd.id, type: nd.type ?? "artifact", position: live.get(nd.id) ?? nd.position, draggable: false, selectable: false,
+      data: { ...(nd.data as unknown as ArtifactData), fresh: nd.id === hit.nodeId },
+    })));
+    setReplayEdges(snap.edges.map((ed) => ({ ...(ed as unknown as Edge), animated: ed.id === hit.edgeId, selectable: false })));
+  }, [replay, timeline]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openTimeline = () => { setExperimentId(null); setPlaying(false); setReplay(timeline.length - 1); };
+  const closeTimeline = useCallback(() => { setPlaying(false); setReplay(null); }, []);
 
   const cluster = () => {
     setClustering(true);
@@ -245,12 +361,14 @@ function WorkspaceInner() {
     const xs = nodes.map((nd) => nd.position.x);
     setNodes((ns) => [...ns, n(id, (xs.length ? Math.max(...xs) : 0) + 360, 80 + Math.random() * 400, { kind: p.kind, title: p.title, meta: p.summary, tags: p.tags })]);
     setEdges((es) => [...es, ...p.links.map((t) => e(id, t, true))]);
+    setReplay(null);
     toast.success(`Added “${p.title}”`);
   };
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas text-foreground">
       <Toaster theme="dark" />
+      <WhyDialog open={whyOpen} onOpenChange={setWhyOpen} />
       {selectedExperiment && <ExperimentPanel title={selectedExperiment.data.title} experiment={selectedExperiment.data.experiment ?? createExperiment()} onChange={updateExperiment} onClose={() => setExperimentId(null)} />}
       {aiOpen && <AnalyzeDialog items={nodes.map((nd) => ({ id: nd.id, kind: nd.data.kind, title: nd.data.title, tags: nd.data.tags }))} onClose={() => setAiOpen(false)} onAdd={addAnalyzed} />}
       {/* Header */}
@@ -265,18 +383,16 @@ function WorkspaceInner() {
           <span className="truncate text-sm text-muted-foreground">{ws}</span>
         </div>
         <div className="ml-auto flex max-w-full flex-wrap items-center gap-2">
-          <span className={cn("hidden text-[11px] md:inline", save === "error" ? "text-destructive" : "text-muted-foreground")}>
-            {save === "saving" ? "Saving…" : save === "saved" ? "All changes saved" : save === "error" ? "Save failed" : ""}
-          </span>
+          <SyncPill online={online} syncing={syncing || save === "saving"} failed={save === "error"} pending={pending} onRetry={() => void flush()} />
           <Button variant="ghost" size="icon" onClick={() => supabase.auth.signOut()} className="h-7 w-7 text-muted-foreground" aria-label="Sign out" title="Sign out"><LogOut className="h-4 w-4" /></Button>
           <div className="hidden items-center gap-2 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground xl:flex">
             <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-success" /></span>
             Agent Team · 4 agents
           </div>
-          <Button variant="outline" size="sm" onClick={() => setAiOpen(true)} title="AI Summarize" className="border-primary/50 text-primary"><Sparkles /><span className="hidden lg:inline">AI Summarize</span></Button>
-          <Button variant="outline" size="sm" onClick={upload} title="Upload Source"><Upload /><span className="hidden lg:inline">Upload Source</span></Button>
-          <Button variant="outline" size="sm" onClick={addExperiment} disabled={!loaded} title="Add experiment" aria-label="Add experiment"><FlaskConical /><span className="hidden sm:inline">Experiment</span></Button>
-          <Button size="sm" onClick={cluster} disabled={clustering || !loaded} title="Cluster Canvas">
+          <Button variant="outline" size="sm" disabled={replaying} onClick={() => setAiOpen(true)} title="AI Summarize" className="border-primary/50 text-primary"><Sparkles /><span className="hidden lg:inline">AI Summarize</span></Button>
+          <Button variant="outline" size="sm" disabled={replaying} onClick={upload} title="Upload Source"><Upload /><span className="hidden lg:inline">Upload Source</span></Button>
+          <Button variant="outline" size="sm" onClick={addExperiment} disabled={!loaded || replaying} title="Add experiment" aria-label="Add experiment"><FlaskConical /><span className="hidden sm:inline">Experiment</span></Button>
+          <Button size="sm" onClick={cluster} disabled={clustering || !loaded || replaying} title="Cluster Canvas">
             {clustering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles />}<span className="hidden lg:inline">Cluster Canvas</span>
           </Button>
           <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={!loaded} aria-label="Export workspace" title="Export workspace"><Download /><span className="hidden sm:inline">Export</span></Button></DropdownMenuTrigger>
@@ -331,17 +447,34 @@ function WorkspaceInner() {
               })}
             </Section>
           </div>
+          <div className="w-60 shrink-0 border-t border-border p-3">
+            <button onClick={() => setWhyOpen(true)} className="group w-full rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/50">
+              <span className="flex items-center gap-2 text-xs font-medium text-foreground"><Scale className="h-3.5 w-3.5 text-primary" />Why ResearchGraph?</span>
+              <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">Visual multi-agent graph vs. tab-heavy research tools.</span>
+            </button>
+          </div>
         </aside>
 
         {/* Canvas */}
         <main className="relative min-w-0 flex-1">
-          <ReactFlow nodes={shown} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onInit={setRf}
-            onNodeClick={(_, node) => { if (node.data.kind === "experiment") setExperimentId(node.id); }}
+          <ReactFlow nodes={replaying ? replayNodes : shown} edges={replaying ? replayEdges : edges}
+            onNodesChange={replaying ? onReplayNodesChange : onNodesChange} onEdgesChange={replaying ? () => {} : onEdgesChange}
+            onConnect={replaying ? () => {} : onConnect} onInit={setRf}
+            nodesDraggable={!replaying} nodesConnectable={!replaying} elementsSelectable={!replaying}
+            onNodeClick={(_, node) => { if (!replaying && node.data.kind === "experiment") setExperimentId(node.id); }}
             nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.2 }} proOptions={{ hideAttribution: true }} colorMode="dark" minZoom={0.2}>
             <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--grid-dot)" bgColor="var(--canvas)" />
-            <Controls showInteractive={false} />
-            <MiniMap pannable zoomable maskColor="color-mix(in oklab, var(--canvas) 70%, transparent)" nodeColor="var(--border)" />
+            {!replaying && <Controls showInteractive={false} />}
+            {!replaying && <MiniMap className="max-sm:hidden" pannable zoomable maskColor="color-mix(in oklab, var(--canvas) 70%, transparent)" nodeColor="var(--border)" />}
           </ReactFlow>
+          {replaying ? (
+            <TimelineDrawer events={timeline} index={replay} onIndex={setReplay} playing={playing} onPlaying={setPlaying} onClose={closeTimeline} />
+          ) : (
+            <Button variant="outline" size="sm" onClick={openTimeline} disabled={!loaded} aria-label="Open timeline"
+              className="absolute bottom-4 left-1/2 z-10 h-7 -translate-x-1/2 rounded-full bg-panel/90 px-3 text-xs backdrop-blur">
+              <History className="text-primary" />Timeline<span className="font-mono text-[10px] text-muted-foreground">{timeline.length}</span>
+            </Button>
+          )}
         </main>
 
         {/* Right agent sidebar */}
@@ -362,4 +495,17 @@ function Section({ title, action, onAction, children }: { title: string; action?
       <div className="space-y-0.5">{children}</div>
     </div>
   );
+}
+
+function SyncPill({ online, syncing, failed, pending, onRetry }: { online: boolean; syncing: boolean; failed: boolean; pending: number; onRetry: () => void }) {
+  const [dot, label, detail] = !online
+    ? ["bg-node-experiment", "Offline", pending ? ` · ${pending} pending` : " · saved locally"]
+    : syncing ? ["bg-primary animate-pulse", "Online", " — Syncing…"]
+    : failed ? ["bg-destructive", "Sync failed", " · Retry"]
+    : ["bg-success", "Online", " · Synced"];
+  const content = <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} /><span>{label}</span><span className="hidden md:inline">{detail}</span>{syncing && <RefreshCw className="h-3 w-3 animate-spin" />}</>;
+  const cls = cn("flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[11px]", !online ? "border-node-experiment/40 text-node-experiment" : failed ? "border-destructive/50 text-destructive" : "border-border text-muted-foreground");
+  return failed && online
+    ? <button onClick={onRetry} className={cn(cls, "hover:bg-destructive/10")} aria-label="Retry sync" title="Retry sync">{content}</button>
+    : <span role="status" aria-live="polite" className={cls} title={!online ? "Changes are kept on this device and sync when you reconnect." : undefined}>{content}</span>;
 }
