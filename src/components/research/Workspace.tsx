@@ -15,7 +15,9 @@ import WhyDialog from "./WhyDialog";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { createExperiment, type Experiment } from "@/lib/experiments";
-import { buildWorkspaceExport, downloadWorkspace, workspaceMarkdown } from "@/lib/workspace-export";
+import { downloadWorkspace } from "@/lib/workspace-export";
+import { buildResearchReport, researchReportMarkdown } from "@/lib/research-report";
+import { readAgentLog, removeAgentLog } from "@/lib/agent-log";
 import { appendEvents, diffCanvas, inferTimeline, parseTimeline, replayTimeline, touchedBy, type Canvas, type TimelineEdge, type TimelineEvent, type TimelineNode } from "@/lib/timeline";
 import { listDirty, markSynced, readList, readWorkspace, removeWorkspace, writeList, writeWorkspace, type CachedWorkspace } from "@/lib/offline-cache";
 import "@xyflow/react/dist/style.css";
@@ -168,6 +170,16 @@ function WorkspaceInner({ userId }: { userId: string }) {
   useEffect(() => {
     setRight(window.innerWidth > 1100);
     setLeft(window.innerWidth > 640);
+    // When the window shrinks past a breakpoint, close panels that would cover the canvas.
+    let prev = window.innerWidth;
+    const onResize = () => {
+      const w = window.innerWidth;
+      if (prev > 1024 && w <= 1024) setRight(false);
+      if (prev > 640 && w <= 640) setLeft(false);
+      prev = w;
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   // Load workspace list (seed a sample one for new users)
@@ -273,6 +285,7 @@ function WorkspaceInner({ userId }: { userId: string }) {
     if (error) { toast.error(error.message); return; }
     const rest = workspaces.filter((w) => w.id !== id);
     removeWorkspace(store(), userId, id);
+    removeAgentLog(store(), userId, id);
     writeList(store(), userId, rest);
     setWorkspaces(rest);
     if (id === wsId) setWsId(rest[0]?.id ?? null);
@@ -352,8 +365,9 @@ function WorkspaceInner({ userId }: { userId: string }) {
   };
 
   const exportWorkspace = (format: "json" | "md") => {
-    const workspace = buildWorkspaceExport(ws, nodes, edges);
-    downloadWorkspace(format === "json" ? JSON.stringify(workspace, null, 2) : workspaceMarkdown(workspace), ws, format);
+    const report = buildResearchReport(ws, clean(nodes), cleanEdges(edges), wsId ? readAgentLog(store(), userId, wsId) : [], timelineRef.current);
+    downloadWorkspace(format === "json" ? JSON.stringify(report, null, 2) : researchReportMarkdown(report), `${ws} research report`, format);
+    toast.success(`Research report downloaded (${format === "json" ? "JSON" : "Markdown"})`);
   };
 
   const spawn = (p: Proposal, agent: string) => {
@@ -382,7 +396,7 @@ function WorkspaceInner({ userId }: { userId: string }) {
           <span className="text-muted-foreground">/</span>
           <span className="truncate text-sm text-muted-foreground">{ws}</span>
         </div>
-        <div className="ml-auto flex max-w-full flex-wrap items-center gap-2">
+        <div className="ml-auto flex max-w-full flex-wrap items-center gap-2 max-sm:gap-1.5 max-sm:[&>button]:px-2">
           <SyncPill online={online} syncing={syncing || save === "saving"} failed={save === "error"} pending={pending} onRetry={() => void flush()} />
           <Button variant="ghost" size="icon" onClick={() => supabase.auth.signOut()} className="h-7 w-7 text-muted-foreground" aria-label="Sign out" title="Sign out"><LogOut className="h-4 w-4" /></Button>
           <div className="hidden items-center gap-2 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground xl:flex">
@@ -395,8 +409,8 @@ function WorkspaceInner({ userId }: { userId: string }) {
           <Button size="sm" onClick={cluster} disabled={clustering || !loaded || replaying} title="Cluster Canvas">
             {clustering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles />}<span className="hidden lg:inline">Cluster Canvas</span>
           </Button>
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={!loaded} aria-label="Export workspace" title="Export workspace"><Download /><span className="hidden sm:inline">Export</span></Button></DropdownMenuTrigger>
-            <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => exportWorkspace("md")}><FileText />Export Markdown</DropdownMenuItem><DropdownMenuItem onSelect={() => exportWorkspace("json")}><Code2 />Export JSON</DropdownMenuItem></DropdownMenuContent>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={!loaded} aria-label="Export Research Report" title="Export Research Report"><Download /><span className="hidden sm:inline xl:hidden">Report</span><span className="hidden xl:inline">Export Research Report</span></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56"><DropdownMenuItem onSelect={() => exportWorkspace("md")}><FileText />Markdown report (.md)</DropdownMenuItem><DropdownMenuItem onSelect={() => exportWorkspace("json")}><Code2 />JSON report (.json)</DropdownMenuItem></DropdownMenuContent>
           </DropdownMenu>
           <Button variant="ghost" size="icon" onClick={() => { setRight(!right); if (window.innerWidth <= 640) setLeft(false); }} className="h-7 w-7 text-muted-foreground" aria-label="Toggle agent panel" title="Toggle agent panel">
             {right ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
@@ -479,7 +493,7 @@ function WorkspaceInner({ userId }: { userId: string }) {
 
         {/* Right agent sidebar */}
         <aside className={cn("flex shrink-0 flex-col overflow-hidden border-l border-border bg-panel transition-all duration-300 max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-20", right ? "w-80" : "w-0 border-l-0")}>
-          <AgentPanel items={nodes.map((nd) => ({ id: nd.id, kind: nd.data.kind, title: nd.data.title, tags: nd.data.tags }))} onSpawn={spawn} />
+          {wsId ? <AgentPanel key={wsId} userId={userId} workspaceId={wsId} items={nodes.map((nd) => ({ id: nd.id, kind: nd.data.kind, title: nd.data.title, tags: nd.data.tags }))} onSpawn={spawn} /> : <div className="w-80" />}
         </aside>
       </div>
     </div>

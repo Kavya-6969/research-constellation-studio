@@ -36,7 +36,7 @@ export default function TimelineDrawer({ events, index, onIndex, playing, onPlay
   }, [index, last, onIndex, onClose]);
 
   return (
-    <div role="region" aria-label="Timeline replay" className="absolute inset-x-2 bottom-2 z-10 rounded-lg border border-border bg-panel/95 p-3 shadow-lg backdrop-blur sm:inset-x-4 sm:bottom-4">
+    <div role="region" aria-label="Timeline replay" className="absolute inset-x-2 bottom-2 z-10 rounded-lg border border-border bg-panel/95 p-3 shadow-lg backdrop-blur animate-in fade-in slide-in-from-bottom-2 duration-200 sm:inset-x-4 sm:bottom-4">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-primary"><History className="h-3.5 w-3.5" />Replay</span>
         <span className="font-mono text-[11px] text-muted-foreground">{events.length ? `${index + 1} / ${events.length}` : "0 / 0"}</span>

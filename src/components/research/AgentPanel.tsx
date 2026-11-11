@@ -4,13 +4,14 @@ import { toast } from "sonner";
 import { Brain, Check, X, Loader2, Send, BookOpen, Wrench, FlaskConical, Network, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { runController, runAgent } from "@/lib/ai/agents.functions";
+import { readAgentLog, writeAgentLog } from "@/lib/agent-log";
 import { applyOutcome, reinstate, START_SCORE, RETIRE_AT, type AgentId, type AgentState, type AgentStatus } from "@/lib/agents/scoring";
 
 type Specialist = Exclude<AgentId, "controller">;
 export type Proposal = { kind: "paper" | "dataset" | "code" | "note"; title: string; summary: string; tags: string[]; links: string[] };
 type Item = { id: string; kind: string; title: string; tags: string[] };
 type Feed = {
-  id: string; agent: AgentId; text: string; time: string; confidence?: number; steps?: string[];
+  id: string; agent: AgentId; text: string; time: string; at?: string; goal?: string; confidence?: number; steps?: string[];
   gate?: { type: "task"; task: string; target: Specialist; state: "pending" | "approved" | "rejected" }
        | { type: "node"; proposal: Proposal; state: "pending" | "approved" | "rejected" };
 };
@@ -35,7 +36,7 @@ const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "
 const uid = () => Math.random().toString(36).slice(2);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export default function AgentPanel({ items, onSpawn }: { items: Item[]; onSpawn: (p: Proposal, agent: AgentId) => void }) {
+export default function AgentPanel({ items, onSpawn, userId, workspaceId }: { items: Item[]; onSpawn: (p: Proposal, agent: AgentId) => void; userId: string; workspaceId: string }) {
   const [agents, setAgents] = useState(fresh);
   const [feed, setFeed] = useState<Feed[]>([]);
   const [goal, setGoal] = useState("");
@@ -43,7 +44,24 @@ export default function AgentPanel({ items, onSpawn }: { items: Item[]; onSpawn:
   const controllerFn = useServerFn(runController);
   const agentFn = useServerFn(runAgent);
 
-  useEffect(() => { try { const s = localStorage.getItem(STORE); if (s) setAgents({ ...fresh(), ...JSON.parse(s) }); } catch { /* ignore */ } }, []);
+  const [restored, setRestored] = useState(false);
+  // Save the feed for this workspace on every change (after the saved copy is restored).
+  useEffect(() => { if (restored) writeAgentLog(localStorage, userId, workspaceId, feed); }, [restored, feed, userId, workspaceId]);
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem(STORE);
+      if (s) {
+        const saved = { ...fresh(), ...JSON.parse(s) } as Record<AgentId, AgentState>;
+        // A task interrupted by a refresh can't resume; show those agents as idle.
+        for (const id of Object.keys(saved) as AgentId[]) if (saved[id].status === "running") saved[id] = { ...saved[id], status: "idle", step: "" };
+        setAgents(saved);
+      }
+    } catch { /* ignore */ }
+    const log = readAgentLog(localStorage, userId, workspaceId) as Feed[];
+    setFeed(log);
+    setGoalCtx(log.find((f) => f.goal)?.goal ?? "");
+    setRestored(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { localStorage.setItem(STORE, JSON.stringify(agents)); }, [agents]);
 
   const patch = (id: AgentId, p: Partial<AgentState>) => setAgents((a) => ({ ...a, [id]: { ...a[id], ...p } }));
@@ -52,7 +70,7 @@ export default function AgentPanel({ items, onSpawn }: { items: Item[]; onSpawn:
     if (next.status === "retired" && a[id].status !== "retired") toast.error(`${a[id].name} was retired for low score.`);
     return { ...a, [id]: next };
   });
-  const push = (f: Omit<Feed, "id" | "time">) => setFeed((x) => [{ ...f, id: uid(), time: now() }, ...x]);
+  const push = (f: Omit<Feed, "id" | "time" | "at">) => setFeed((x) => [{ ...f, id: uid(), time: now(), at: new Date().toISOString() }, ...x]);
   const setGate = (id: string, state: "approved" | "rejected") => setFeed((x) => x.map((f) => f.id === id && f.gate ? { ...f, gate: { ...f.gate, state } } as Feed : f));
 
   const submit = async () => {
@@ -61,7 +79,7 @@ export default function AgentPanel({ items, onSpawn }: { items: Item[]; onSpawn:
     if (!available.length) { toast.error("All specialists are retired. Reinstate one first."); return; }
     setGoal(""); setGoalCtx(g);
     patch("controller", { status: "running", step: "Routing goal to specialists…" });
-    push({ agent: "controller", text: `New goal received: “${g}”` });
+    push({ agent: "controller", text: `New goal received: “${g}”`, goal: g });
     const r = await controllerFn({ data: { goal: g, items, available } });
     if (r.error || !r.assignments.length) {
       score("controller", "failed"); patch("controller", { status: "idle", step: "" });
@@ -69,15 +87,15 @@ export default function AgentPanel({ items, onSpawn }: { items: Item[]; onSpawn:
     }
     push({ agent: "controller", text: r.thought, confidence: r.confidence });
     for (const a of r.assignments) {
-      push({ agent: "controller", text: `Wants to assign ${META[a.agent].name}: ${a.task}`, gate: { type: "task", task: a.task, target: a.agent, state: "pending" } });
+      push({ agent: "controller", text: `Wants to assign ${META[a.agent].name}: ${a.task}`, gate: { type: "task", task: a.task, target: a.agent, state: "pending" }, goal: g });
       patch(a.agent, { status: "waiting", step: "Waiting for task approval" });
     }
     patch("controller", { status: "complete", step: "" });
   };
 
-  const runTask = async (f: Feed, target: Specialist, task: string) => {
+  const runTask = async (f: Feed, target: Specialist, task: string, goal = goalCtx) => {
     patch(target, { status: "running", step: "Thinking…" });
-    const r = await agentFn({ data: { agent: target, task, goal: goalCtx, items } });
+    const r = await agentFn({ data: { agent: target, task, goal, items } });
     if (r.error || !r.proposals.length) {
       score(target, "failed"); setAgents((a) => a[target].status === "retired" ? a : { ...a, [target]: { ...a[target], status: "idle", step: "" } });
       push({ agent: target, text: r.error ?? "Task failed: no useful results." }); return;
@@ -101,7 +119,7 @@ export default function AgentPanel({ items, onSpawn }: { items: Item[]; onSpawn:
   const decide = (f: Feed, ok: boolean) => {
     if (!f.gate) return;
     setGate(f.id, ok ? "approved" : "rejected");
-    if (f.gate.type === "task") { if (ok) void runTask(f, f.gate.target, f.gate.task); return; }
+    if (f.gate.type === "task") { if (ok) void runTask(f, f.gate.target, f.gate.task, f.goal ?? goalCtx); return; }
     if (ok) onSpawn(f.gate.proposal, f.agent);
     score(f.agent, ok ? "approved" : "rejected");
   };
