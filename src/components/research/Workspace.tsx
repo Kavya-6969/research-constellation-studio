@@ -23,12 +23,13 @@ import { listDirty, markSynced, readList, readWorkspace, removeWorkspace, writeL
 import "@xyflow/react/dist/style.css";
 import {
   FileText, Database, StickyNote, Brain, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose,
-  PanelRightOpen, Upload, Network, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2, FlaskConical, Download, History, Scale, RefreshCw,
+  PanelRightOpen, Upload, Network, Hash, FolderKanban, Plus, Sparkles, Loader2, LogOut, Trash2, Code2, FlaskConical, Download, History, Scale, RefreshCw, Paperclip, ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ACCEPT_ATTR, storagePath, uploadCard, validateUpload, type UploadedFile } from "@/lib/uploads";
 
 type Kind = "paper" | "dataset" | "note" | "code" | "agent" | "experiment";
-type ArtifactData = { kind: Kind; title: string; meta: string; tags: string[]; dim?: boolean; fresh?: boolean; experiment?: Experiment };
+type ArtifactData = { kind: Kind; title: string; meta: string; tags: string[]; dim?: boolean; fresh?: boolean; experiment?: Experiment; file?: UploadedFile };
 
 const KIND: Record<Kind, { icon: typeof FileText; label: string; text: string; bg: string }> = {
   paper: { icon: FileText, label: "Paper", text: "text-node-paper", bg: "bg-node-paper/10" },
@@ -38,6 +39,14 @@ const KIND: Record<Kind, { icon: typeof FileText; label: string; text: string; b
   agent: { icon: Brain, label: "Agent Thought", text: "text-node-agent", bg: "bg-node-agent/10" },
   experiment: { icon: FlaskConical, label: "Experiment Node", text: "text-node-experiment", bg: "bg-node-experiment/10" },
 };
+
+// Files are private, so each open asks for a short-lived link. The tab opens first so popup blockers allow it.
+async function openSourceFile(file: UploadedFile) {
+  const w = window.open("", "_blank");
+  const { data, error } = await supabase.storage.from("sources").createSignedUrl(file.path, 300);
+  if (error || !data) { w?.close(); toast.error("Couldn't open this file. Check your connection and try again."); return; }
+  if (w) w.location.href = data.signedUrl; else window.location.assign(data.signedUrl);
+}
 
 function ArtifactNode({ data, selected }: NodeProps<Node<ArtifactData>>) {
   const k = KIND[data.kind];
@@ -60,6 +69,12 @@ function ArtifactNode({ data, selected }: NodeProps<Node<ArtifactData>>) {
         <div><p className="text-[10px] text-muted-foreground">Accuracy</p><p className="text-sm text-node-experiment">{(data.experiment ?? createExperiment()).metrics.accuracy.toFixed(2)}%</p></div>
         <div><p className="text-[10px] text-muted-foreground">Latency</p><p className="text-sm">{(data.experiment ?? createExperiment()).metrics.latencyMs.toFixed(1)} ms</p></div>
       </div>}
+      {data.file && (
+        <button type="button" onClick={(ev) => { ev.stopPropagation(); if (data.file) void openSourceFile(data.file); }} title={`Open ${data.file.name}`} aria-label={`Open ${data.file.name}`}
+          className="nodrag mt-2 flex w-full items-center gap-1.5 rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground">
+          <Paperclip className="h-3 w-3 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{data.file.name}</span><ExternalLink className="h-3 w-3 shrink-0" />
+        </button>
+      )}
       <div className="mt-2.5 flex flex-wrap gap-1">
         {data.tags.map((t) => <span key={t} className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">#{t}</span>)}
       </div>
@@ -88,7 +103,7 @@ type WsRow = { id: string; name: string };
 type SaveState = "idle" | "saving" | "saved" | "error" | "offline";
 
 const clean = (ns: Node<ArtifactData>[]) =>
-  ns.map(({ id, type, position, data }) => ({ id, type, position, data: { kind: data.kind, title: data.title, meta: data.meta, tags: data.tags, ...(data.kind === "experiment" ? { experiment: data.experiment ?? createExperiment() } : {}) } }));
+  ns.map(({ id, type, position, data }) => ({ id, type, position, data: { kind: data.kind, title: data.title, meta: data.meta, tags: data.tags, ...(data.kind === "experiment" ? { experiment: data.experiment ?? createExperiment() } : {}), ...(data.file ? { file: data.file } : {}) } }));
 const cleanEdges = (es: Edge[]) => es.map(({ id, source, target, type, animated, sourceHandle, targetHandle }) => ({ id, source, target, type, animated, sourceHandle, targetHandle }));
 
 export default function Workspace() {
@@ -341,10 +356,30 @@ function WorkspaceInner({ userId }: { userId: string }) {
     }, 700);
   };
 
-  const upload = () => {
-    const id = String(Date.now());
-    setNodes((ns) => [...ns, n(id, 1080, 220, { kind: "paper", title: "Untitled uploaded source.pdf", meta: "Parsing…", tags: ["AI"] })]);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const uploadFiles = async (files: File[], at?: { x: number; y: number }) => {
+    if (!wsId || !files.length) return;
+    if (!navigator.onLine) { toast.error("Reconnect to upload files."); return; }
+    setReplay(null);
+    const base = at ?? (rf ? rf.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) : { x: 0, y: 0 });
+    await Promise.all(files.map(async (file, i) => {
+      const problem = validateUpload(file);
+      if (problem) { toast.error(problem); return; }
+      setUploading((c) => c + 1);
+      try {
+        const id = crypto.randomUUID();
+        const path = storagePath(userId, wsId, id, file.name);
+        const { error } = await supabase.storage.from("sources").upload(path, file, { upsert: false, ...(file.type ? { contentType: file.type } : {}) });
+        if (error) { toast.error(`Couldn't upload “${file.name}”. Please try again.`); return; }
+        const card = uploadCard({ path, name: file.name, size: file.size, type: file.type });
+        setNodes((ns) => [...ns, { id, type: "artifact", position: { x: base.x + i * 40, y: base.y + i * 40 }, data: card }]);
+        toast.success(`Added “${file.name}” to the canvas`);
+      } finally { setUploading((c) => c - 1); }
+    }));
   };
+  const upload = () => fileInput.current?.click();
 
   const addExperiment = () => {
     const id = crypto.randomUUID();
@@ -404,7 +439,9 @@ function WorkspaceInner({ userId }: { userId: string }) {
             Agent Team · 4 agents
           </div>
           <Button variant="outline" size="sm" disabled={replaying} onClick={() => setAiOpen(true)} title="AI Summarize" className="border-primary/50 text-primary"><Sparkles /><span className="hidden lg:inline">AI Summarize</span></Button>
-          <Button variant="outline" size="sm" disabled={replaying} onClick={upload} title="Upload Source"><Upload /><span className="hidden lg:inline">Upload Source</span></Button>
+          <Button variant="outline" size="sm" disabled={replaying || !loaded || uploading > 0} onClick={upload} title="Upload Source" aria-label="Upload Source">{uploading > 0 ? <Loader2 className="animate-spin" /> : <Upload />}<span className="hidden lg:inline">{uploading > 0 ? "Uploading…" : "Upload Source"}</span></Button>
+          <input ref={fileInput} type="file" multiple accept={ACCEPT_ATTR} className="hidden" aria-hidden tabIndex={-1}
+            onChange={(ev) => { const fs = [...(ev.target.files ?? [])]; ev.target.value = ""; void uploadFiles(fs); }} />
           <Button variant="outline" size="sm" onClick={addExperiment} disabled={!loaded || replaying} title="Add experiment" aria-label="Add experiment"><FlaskConical /><span className="hidden sm:inline">Experiment</span></Button>
           <Button size="sm" onClick={cluster} disabled={clustering || !loaded || replaying} title="Cluster Canvas">
             {clustering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles />}<span className="hidden lg:inline">Cluster Canvas</span>
@@ -470,7 +507,17 @@ function WorkspaceInner({ userId }: { userId: string }) {
         </aside>
 
         {/* Canvas */}
-        <main className="relative min-w-0 flex-1">
+        <main className="relative min-w-0 flex-1"
+          onDragOver={(ev) => { if (!replaying && ev.dataTransfer.types.includes("Files")) { ev.preventDefault(); setDragging(true); } }}
+          onDragLeave={(ev) => { if (!ev.currentTarget.contains(ev.relatedTarget as globalThis.Node | null)) setDragging(false); }}
+          onDrop={(ev) => {
+            if (!ev.dataTransfer.files.length) return;
+            ev.preventDefault(); setDragging(false);
+            void uploadFiles([...ev.dataTransfer.files], rf?.screenToFlowPosition({ x: ev.clientX, y: ev.clientY }));
+          }}>
+          {dragging && <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-primary/60 bg-primary/5 animate-in fade-in duration-150">
+            <p className="flex items-center gap-2 rounded-md bg-panel px-3 py-2 text-xs text-foreground"><Upload className="h-3.5 w-3.5 text-primary" />Drop files to add them as sources</p>
+          </div>}
           <ReactFlow nodes={replaying ? replayNodes : shown} edges={replaying ? replayEdges : edges}
             onNodesChange={replaying ? onReplayNodesChange : onNodesChange} onEdgesChange={replaying ? () => {} : onEdgesChange}
             onConnect={replaying ? () => {} : onConnect} onInit={setRf}

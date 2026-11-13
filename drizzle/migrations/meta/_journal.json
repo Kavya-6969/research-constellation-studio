@@ -15,6 +15,13 @@
       "when": 1794323901573,
       "tag": "0001_add_workspace_timeline",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794575417820,
+      "tag": "0002_sources_storage_policies",
+      "breakpoints": true
     }
   ]
 }
